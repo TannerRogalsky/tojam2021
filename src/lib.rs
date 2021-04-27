@@ -55,8 +55,11 @@ impl Game {
 
         let brush = rscsg::dim3::Csg::sphere(rscsg::dim3::Vector(0., 0., 0.), 1., 10, 10);
 
-        let csg = rscsg::dim3::Csg::cube(rscsg::dim3::Vector(30., 30., 30.), true)
-            .translate(rscsg::dim3::Vector(0., -30. / 2., 0.));
+        let csg = rscsg::dim3::Csg::subtract(
+            &rscsg::dim3::Csg::cube(rscsg::dim3::Vector(30., 30., 30.), true)
+                .translate(rscsg::dim3::Vector(0., -30. / 2., 0.)),
+            &rscsg::dim3::Csg::cube(rscsg::dim3::Vector(28., 4., 28.), true),
+        );
         let ground_handle = physics.add_csg(RigidBodyBuilder::new_static().build(), &csg);
         let vertices = csg.iter_triangles().flat_map(to_vert).collect::<Vec<_>>();
         let geometry = solstice::mesh::VertexMesh::new(&mut ctx, MAX_VERTS)?;
