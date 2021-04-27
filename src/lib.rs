@@ -3,12 +3,14 @@ pub mod window;
 
 use glutin::event::{ElementState, MouseButton, VirtualKeyCode};
 use rapier3d::dynamics::RigidBodyBuilder;
-use rapier3d::geometry::{ColliderBuilder, ColliderHandle};
-use rapier3d::na::{UnitQuaternion, Vector3};
+use rapier3d::geometry::{ColliderBuilder, ColliderHandle, Ray};
+use rapier3d::na::{Point2, Point3, UnitQuaternion, Vector2, Vector3};
 use solstice_2d::{
     solstice::{self, Context},
     Color, Draw, Transform3D,
 };
+
+const MAX_VERTS: usize = 1_000_000;
 
 pub enum MouseEvent {
     Button(ElementState, MouseButton),
@@ -31,7 +33,9 @@ pub struct Resources {
 
 pub struct Game {
     csg: rscsg::dim3::Csg,
+    brush: rscsg::dim3::Csg,
     geometry: solstice::mesh::VertexMesh<solstice_2d::Vertex3D>,
+    vert_count: usize,
     capsule: solstice::mesh::IndexedMesh<solstice_2d::Vertex3D, u32>,
     physics: physics::PhysicsContext,
     ctx: Context,
@@ -49,10 +53,14 @@ impl Game {
     pub fn new(mut ctx: Context, width: f32, height: f32, rsrcs: Resources) -> eyre::Result<Self> {
         let mut physics = physics::PhysicsContext::new(0., -9.81, 0.);
 
-        let csg = rscsg::dim3::Csg::cube(rscsg::dim3::Vector(30., 0.25, 30.), true);
+        let brush = rscsg::dim3::Csg::sphere(rscsg::dim3::Vector(0., 0., 0.), 1., 10, 10);
+
+        let csg = rscsg::dim3::Csg::cube(rscsg::dim3::Vector(30., 30., 30.), true)
+            .translate(rscsg::dim3::Vector(0., -30. / 2., 0.));
         let ground_handle = physics.add_csg(RigidBodyBuilder::new_static().build(), &csg);
         let vertices = csg.iter_triangles().flat_map(to_vert).collect::<Vec<_>>();
-        let geometry = solstice::mesh::VertexMesh::with_data(&mut ctx, &vertices)?;
+        let geometry = solstice::mesh::VertexMesh::new(&mut ctx, MAX_VERTS)?;
+        geometry.set_vertices(&mut ctx, &vertices, 0);
 
         let (capsule_handle, capsule) = {
             let coll = ColliderBuilder::capsule_y(1., 0.5).build();
@@ -91,7 +99,9 @@ impl Game {
 
         Ok(Self {
             csg,
+            brush,
             geometry,
+            vert_count: vertices.len(),
             capsule,
             physics,
             ctx,
@@ -130,17 +140,20 @@ impl Game {
             .update(self.physics.collider_position(self.capsule_handle));
 
         let mut g = self.gfx.lock(&mut self.ctx);
-        g.set_camera(self.camera);
         g.clear(Color::new(0., 0., 0., 1.));
+
+        g.set_projection_mode(Some(solstice_2d::Projection::Perspective(Some(
+            self.camera.projection,
+        ))));
+        g.set_camera(self.camera);
+        g.set_shader(Some(self.shader.clone()));
 
         let geometry = solstice::Geometry {
             mesh: &self.geometry,
-            draw_range: 0..self.geometry.len(),
+            draw_range: 0..self.vert_count,
             draw_mode: solstice::DrawMode::Triangles,
             instance_count: 1,
         };
-
-        g.set_shader(Some(self.shader.clone()));
         g.draw(geometry);
 
         if let Some(position) = self.physics.collider_position(self.capsule_handle) {
@@ -155,6 +168,7 @@ impl Game {
             );
 
             g.set_shader(None);
+            g.set_projection_mode(None);
             g.set_camera(Transform3D::default());
             let font_scale = 16.;
             g.print(
@@ -175,6 +189,16 @@ impl Game {
                 16.,
                 solstice_2d::Rectangle::new(0., font_scale * 2., 720., 720.),
             );
+            g.print(
+                format!(
+                    "verts: {}. {:.2}% of alloc",
+                    self.vert_count,
+                    self.vert_count as f32 / MAX_VERTS as f32 * 100.
+                ),
+                self.debug_font_id,
+                16.,
+                solstice_2d::Rectangle::new(0., font_scale * 3., 720., 720.),
+            )
         }
     }
 
@@ -188,13 +212,76 @@ impl Game {
             VirtualKeyCode::A => self.input_state.a = pressed,
             VirtualKeyCode::S => self.input_state.s = pressed,
             VirtualKeyCode::D => self.input_state.d = pressed,
+            VirtualKeyCode::Space => {
+                if let Some(body) = self.physics.rigid_body_mut(self.capsule_handle) {
+                    body.apply_impulse(Vector3::new(0., 5., 0.), true)
+                }
+            }
             _ => {}
         };
     }
 
     pub fn handle_mouse_event(&mut self, event: MouseEvent) {
         match event {
-            MouseEvent::Button(_, _) => {}
+            MouseEvent::Button(state, button) => match state {
+                ElementState::Pressed => {
+                    let (x, y) = self.input_state.mouse_position;
+                    let (w, h) = (1280., 720.);
+                    let (point, direction) = self
+                        .camera
+                        .unproject(&Point2::new(x, y), &Vector2::new(w, h));
+                    let ray = Ray::new(point, direction);
+                    match button {
+                        MouseButton::Left => {
+                            if let Some((_collider, distance)) = self.physics.cast_ray(&ray) {
+                                let cp: Point3<f32> = point + direction * distance;
+                                let brush = self
+                                    .brush
+                                    .clone()
+                                    .translate(rscsg::dim3::Vector(cp.x, cp.y, cp.z));
+                                self.csg = rscsg::dim3::Csg::union(&self.csg, &brush);
+                                self.ground_handle = self
+                                    .physics
+                                    .swap_collider(self.ground_handle, &self.csg)
+                                    .unwrap();
+
+                                let vertices = self
+                                    .csg
+                                    .iter_triangles()
+                                    .flat_map(to_vert)
+                                    .collect::<Vec<_>>();
+                                self.geometry.set_vertices(&mut self.ctx, &vertices, 0);
+                                self.vert_count = vertices.len();
+                            }
+                        }
+                        MouseButton::Right => {
+                            if let Some((_collider, distance)) = self.physics.cast_ray(&ray) {
+                                let cp: Point3<f32> = point + direction * distance;
+                                let brush = self
+                                    .brush
+                                    .clone()
+                                    .translate(rscsg::dim3::Vector(cp.x, cp.y, cp.z));
+                                self.csg = rscsg::dim3::Csg::subtract(&self.csg, &brush);
+                                self.ground_handle = self
+                                    .physics
+                                    .swap_collider(self.ground_handle, &self.csg)
+                                    .unwrap();
+
+                                let vertices = self
+                                    .csg
+                                    .iter_triangles()
+                                    .flat_map(to_vert)
+                                    .collect::<Vec<_>>();
+                                self.geometry.set_vertices(&mut self.ctx, &vertices, 0);
+                                self.vert_count = vertices.len();
+                            }
+                        }
+                        MouseButton::Middle => {}
+                        MouseButton::Other(_) => {}
+                    }
+                }
+                ElementState::Released => {}
+            },
             MouseEvent::Moved(x, y) => {
                 if self.input_state.mouse_position == self.input_state.prev_mouse_position
                     && self.input_state.mouse_position == (0., 0.)
@@ -231,20 +318,22 @@ fn iso_into_tx(position: &rapier3d::math::Isometry<f32>) -> Transform3D {
 mod camera {
     use crate::iso_into_tx;
     use rapier3d::math::Isometry;
-    use rapier3d::na::{Translation, UnitQuaternion, Vector3};
+    use rapier3d::na::{
+        Perspective3, Point2, Point3, Translation, UnitQuaternion, Vector2, Vector3,
+    };
     use solstice_2d::Transform3D;
 
     #[derive(Copy, Clone)]
     pub struct CameraState {
-        pub velocity: Vector3<f32>,
         pub position: Isometry<f32>,
+        // this is, technically, the "player rotation"
         pub pivot: UnitQuaternion<f32>,
+        pub projection: solstice_2d::Perspective,
     }
 
     impl CameraState {
         pub fn new() -> Self {
             Self {
-                velocity: Vector3::new(0., 0., 0.),
                 position: Isometry::from_parts(
                     Translation::identity(),
                     UnitQuaternion::from_axis_angle(
@@ -253,6 +342,12 @@ mod camera {
                     ),
                 ),
                 pivot: Default::default(),
+                projection: solstice_2d::Perspective {
+                    aspect: 1280. / 720.,
+                    fovy: std::f32::consts::FRAC_PI_2,
+                    near: 0.01,
+                    far: 1000.0,
+                },
             }
         }
 
@@ -270,6 +365,42 @@ mod camera {
                 self.position = Isometry::from_parts(translation, rotation);
             }
         }
+
+        pub fn unproject(
+            &self,
+            window_coord: &Point2<f32>,
+            size: &Vector2<f32>,
+        ) -> (Point3<f32>, Vector3<f32>) {
+            use rapier3d::na::Point4;
+            let normalized_coord = Point2::new(
+                2.0 * window_coord.x / size.x - 1.0,
+                2.0 * -window_coord.y / size.y + 1.0,
+            );
+
+            let solstice_2d::Perspective {
+                aspect,
+                fovy,
+                near,
+                far,
+            } = self.projection;
+            let tx = Perspective3::new(aspect, fovy, near, far).into_inner()
+                * self.position.inverse().to_homogeneous();
+            let cam = tx.try_inverse().unwrap();
+
+            let normalized_begin = Point4::new(normalized_coord.x, normalized_coord.y, -1.0, 1.0);
+            let normalized_end = Point4::new(normalized_coord.x, normalized_coord.y, 1.0, 1.0);
+
+            let h_unprojected_begin = cam * normalized_begin;
+            let h_unprojected_end = cam * normalized_end;
+
+            let unprojected_begin = Point3::from_homogeneous(h_unprojected_begin.coords).unwrap();
+            let unprojected_end = Point3::from_homogeneous(h_unprojected_end.coords).unwrap();
+
+            (
+                unprojected_begin,
+                (unprojected_end - unprojected_begin).normalize(),
+            )
+        }
     }
 
     impl Into<Transform3D> for CameraState {
@@ -282,11 +413,12 @@ mod camera {
 mod physics {
     use rapier3d::dynamics::{CCDSolver, IntegrationParameters, JointSet, RigidBody, RigidBodySet};
     use rapier3d::geometry::{
-        BroadPhase, Collider, ColliderBuilder, ColliderHandle, ColliderSet, NarrowPhase,
+        BroadPhase, Collider, ColliderBuilder, ColliderHandle, ColliderSet, InteractionGroups,
+        NarrowPhase, Ray,
     };
     use rapier3d::math::Isometry;
     use rapier3d::na::Vector3;
-    use rapier3d::pipeline::PhysicsPipeline;
+    use rapier3d::pipeline::{PhysicsPipeline, QueryPipeline};
 
     pub struct PhysicsContext {
         pipeline: PhysicsPipeline,
@@ -297,6 +429,7 @@ mod physics {
         bodies: RigidBodySet,
         colliders: ColliderSet,
         joints: JointSet,
+        query_pipeline: QueryPipeline,
         ccd_solver: CCDSolver,
     }
 
@@ -311,6 +444,7 @@ mod physics {
                 bodies: RigidBodySet::new(),
                 colliders: ColliderSet::new(),
                 joints: JointSet::new(),
+                query_pipeline: Default::default(),
                 ccd_solver: CCDSolver::new(),
             }
         }
@@ -328,6 +462,29 @@ mod physics {
                 &(),
                 &(),
             );
+            self.query_pipeline.update(&self.bodies, &self.colliders);
+        }
+
+        pub fn cast_ray(&self, ray: &Ray) -> Option<(ColliderHandle, f32)> {
+            self.query_pipeline.cast_ray(
+                &self.colliders,
+                ray,
+                f32::MAX,
+                true,
+                InteractionGroups::all(),
+                None,
+            )
+        }
+
+        pub fn swap_collider(
+            &mut self,
+            collider: ColliderHandle,
+            csg: &rscsg::dim3::Csg,
+        ) -> Option<ColliderHandle> {
+            let body = self.colliders.get(collider)?.parent();
+            self.colliders.remove(collider, &mut self.bodies, true);
+            let collider = Self::build_csg_collider(csg);
+            Some(self.colliders.insert(collider, body, &mut self.bodies))
         }
 
         pub fn add_body(&mut self, body: RigidBody, collider: Collider) -> ColliderHandle {
@@ -336,6 +493,13 @@ mod physics {
         }
 
         pub fn add_csg(&mut self, body: RigidBody, csg: &rscsg::dim3::Csg) -> ColliderHandle {
+            let collider = Self::build_csg_collider(csg);
+            let parent_handle = self.bodies.insert(body);
+            self.colliders
+                .insert(collider, parent_handle, &mut self.bodies)
+        }
+
+        fn build_csg_collider(csg: &rscsg::dim3::Csg) -> Collider {
             let vertices = csg
                 .iter_triangles()
                 .flat_map(|triangle| {
@@ -353,10 +517,7 @@ mod physics {
                     [i + 0, i + 1, i + 2]
                 })
                 .collect::<Vec<[u32; 3]>>();
-            let collider = ColliderBuilder::trimesh(vertices, indices).build();
-            let parent_handle = self.bodies.insert(body);
-            self.colliders
-                .insert(collider, parent_handle, &mut self.bodies)
+            ColliderBuilder::trimesh(vertices, indices).build()
         }
 
         pub fn collider_position(&self, coll: ColliderHandle) -> Option<&Isometry<f32>> {
