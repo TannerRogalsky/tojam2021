@@ -1,0 +1,15 @@
+{
+  "name": "tojam2021",
+  "collaborators": [
+    "Tanner Rogalsky <tanner@tannerrogalsky.com>"
+  ],
+  "version": "0.1.0",
+  "files": [
+    "tojam2021_bg.wasm",
+    "tojam2021.js",
+    "tojam2021.d.ts"
+  ],
+  "module": "tojam2021.js",
+  "types": "tojam2021.d.ts",
+  "sideEffects": false
+}

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Test</title>
+</head>
+<body>
+	<script type="module">
+		// Use ES module import syntax to import functionality from the module
+		// that we have compiled.
+		//
+		// Note that the `default` import is an initialization function which
+		// will "boot" the module and make it ready to use. Currently browsers
+		// don't support natively imported WebAssembly as an ES module, but
+		// eventually the manual initialization won't be required!
+		import init, { Wrapper, KeyEvent } from './tojam2021.js';
+
+		let font_data_promise = fetch('./Inconsolata-Regular.ttf').then(r => r.arrayBuffer());
+
+		async function run() {
+		await init();
+
+		let font_data = new Uint8Array (await font_data_promise);
+
+		let canvas = document.getElementById("game");
+
+		let keyToCode = (key) => {
+			if (key === "w") {
+				return KeyEvent.W;
+			} else if (key === "a") {
+				return KeyEvent.A;
+			}  else if (key === "s") {
+        		return KeyEvent.S;
+        	}  else if (key === "d") {
+        		return KeyEvent.D;
+        	}  else if (key === " ") {
+        		return KeyEvent.Space;
+        	}
+		}
+
+		let isLeft = (button) => {
+			if (button === 0) {
+				return true;
+			} else if (button === 2) {
+				return false;
+			}
+		}
+
+		canvas.addEventListener('keydown', (event) => {
+			let key_code = keyToCode(event.key);
+			if (key_code !== undefined) {
+				game.handle_key_down(key_code);
+			}
+		});
+
+		canvas.addEventListener('keyup', (event) => {
+			let key_code = keyToCode(event.key);
+			if (key_code !== undefined) {
+				game.handle_key_up(key_code);
+			}
+		});
+
+		canvas.addEventListener('mousedown', (event) => {
+			let button = isLeft(event.button);
+			if (button !== undefined) {
+				game.handle_mouse_down(button);
+			}
+		});
+
+		canvas.addEventListener('mousemove', (event) => {
+			game.handle_mouse_move(event.offsetX, event.offsetY);
+		});
+
+		canvas.oncontextmenu = (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			return false;
+		};
+
+		window.addEventListener('mouseup', (event) => {
+			let button = isLeft(event.button);
+			if (button !== undefined) {
+				game.handle_mouse_up(button);
+			}
+		});
+
+		console.log(canvas, font_data);
+
+		let game = new Wrapper(canvas, font_data);
+
+		let loop = (t) => {
+			game.step(t);
+			requestAnimationFrame(loop);
+		}
+		requestAnimationFrame(loop);
+		}
+
+		run();
+	</script>
+<canvas id="game" width="1280" height="720" tabindex="1"></canvas>
+</body>
+</html>
