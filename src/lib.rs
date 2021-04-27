@@ -1,7 +1,12 @@
 mod trimesh;
-pub mod window;
+#[cfg(target_arch = "wasm32")]
+pub mod web;
 
+#[cfg(not(target_arch = "wasm32"))]
 use glutin::event::{ElementState, MouseButton, VirtualKeyCode};
+#[cfg(target_arch = "wasm32")]
+use winit::event::{ElementState, MouseButton, VirtualKeyCode};
+
 use rapier3d::dynamics::RigidBodyBuilder;
 use rapier3d::geometry::{ColliderBuilder, ColliderHandle, Ray};
 use rapier3d::na::{Point2, Point3, UnitQuaternion, Vector2, Vector3};

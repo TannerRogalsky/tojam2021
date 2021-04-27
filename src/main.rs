@@ -1,5 +1,7 @@
 use tojam2021::*;
 
+mod window;
+
 fn main() -> eyre::Result<()> {
     let (width, height) = (1280, 720);
     let event_loop = glutin::event_loop::EventLoop::new();
@@ -11,7 +13,7 @@ fn main() -> eyre::Result<()> {
 
     let resources_folder = std::path::PathBuf::new()
         .join(env!("CARGO_MANIFEST_DIR"))
-        .join("resources");
+        .join("docs");
     let resources = Resources {
         debug_font_data: std::fs::read(resources_folder.join("Inconsolata-Regular.ttf"))?,
     };
