@@ -23,8 +23,8 @@ fn main() -> eyre::Result<()> {
         match event {
             Event::NewEvents(_) => {}
             Event::WindowEvent { event, .. } => match event {
-                WindowEvent::Resized(_size) => {
-                    // lc.handle_resize(size.width as _, size.height as _);
+                WindowEvent::Resized(size) => {
+                    game.handle_resize(size.width as _, size.height as _);
                 }
                 WindowEvent::CloseRequested => {
                     *cf = ControlFlow::Exit;

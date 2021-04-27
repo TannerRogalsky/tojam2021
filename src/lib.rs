@@ -1,11 +1,14 @@
+mod trimesh;
+pub mod window;
+
 use glutin::event::{ElementState, MouseButton, VirtualKeyCode};
-use rapier3d::na::{Point3, UnitQuaternion, Vector3};
+use rapier3d::dynamics::RigidBodyBuilder;
+use rapier3d::geometry::{ColliderBuilder, ColliderHandle};
+use rapier3d::na::{UnitQuaternion, Vector3};
 use solstice_2d::{
     solstice::{self, Context},
     Color, Draw, Transform3D,
 };
-
-pub mod window;
 
 pub enum MouseEvent {
     Button(ElementState, MouseButton),
@@ -29,7 +32,7 @@ pub struct Resources {
 pub struct Game {
     csg: rscsg::dim3::Csg,
     geometry: solstice::mesh::VertexMesh<solstice_2d::Vertex3D>,
-    capsule: solstice::mesh::VertexMesh<solstice_2d::Vertex3D>,
+    capsule: solstice::mesh::IndexedMesh<solstice_2d::Vertex3D, u32>,
     physics: physics::PhysicsContext,
     ctx: Context,
     gfx: solstice_2d::Graphics,
@@ -37,24 +40,50 @@ pub struct Game {
     shader: solstice_2d::Shader,
     camera: camera::CameraState,
     input_state: InputState,
+
+    ground_handle: ColliderHandle,
+    capsule_handle: ColliderHandle,
 }
 
 impl Game {
     pub fn new(mut ctx: Context, width: f32, height: f32, rsrcs: Resources) -> eyre::Result<Self> {
-        let csg = rscsg::dim3::Csg::cube(rscsg::dim3::Vector(3., 0.25, 3.), true);
-        let vertices = csg
-            .get_triangles()
-            .into_iter()
-            .flat_map(to_vert)
-            .collect::<Vec<_>>();
+        let mut physics = physics::PhysicsContext::new(0., -9.81, 0.);
+
+        let csg = rscsg::dim3::Csg::cube(rscsg::dim3::Vector(30., 0.25, 30.), true);
+        let ground_handle = physics.add_csg(RigidBodyBuilder::new_static().build(), &csg);
+        let vertices = csg.iter_triangles().flat_map(to_vert).collect::<Vec<_>>();
         let geometry = solstice::mesh::VertexMesh::with_data(&mut ctx, &vertices)?;
 
-        let vertices = capsule()
-            .get_triangles()
-            .into_iter()
-            .flat_map(to_vert)
-            .collect::<Vec<_>>();
-        let capsule = solstice::mesh::VertexMesh::with_data(&mut ctx, &vertices)?;
+        let (capsule_handle, capsule) = {
+            let coll = ColliderBuilder::capsule_y(1., 0.5).build();
+            let (vertices, indices) = coll.shape().as_capsule().unwrap().to_trimesh(20, 20);
+
+            let vertices = vertices
+                .into_iter()
+                .map(|vertex| {
+                    let normal = vertex.coords.normalize();
+                    solstice_2d::Vertex3D {
+                        position: [vertex.x, vertex.y, vertex.z],
+                        uv: [0., 0.],
+                        color: [1., 1., 1., 1.],
+                        normal: [normal.x, normal.y, normal.z],
+                    }
+                })
+                .collect::<Vec<_>>();
+            let indices = indices
+                .into_iter()
+                .flat_map(|i| std::array::IntoIter::new(i))
+                .collect::<Vec<_>>();
+
+            // let vertices = csg.iter_triangles().flat_map(to_vert).collect::<Vec<_>>();
+            let capsule = solstice::mesh::IndexedMesh::with_data(&mut ctx, &vertices, &indices)?;
+
+            let rb = RigidBodyBuilder::new_dynamic()
+                .translation(0., 4., 0.)
+                .restrict_rotations(false, false, false)
+                .build();
+            (physics.add_body(rb, coll), capsule)
+        };
 
         let mut gfx = solstice_2d::Graphics::new(&mut ctx, width, height)?;
         let debug_font_id = gfx.add_font(std::convert::TryInto::try_into(rsrcs.debug_font_data)?);
@@ -64,18 +93,20 @@ impl Game {
             csg,
             geometry,
             capsule,
-            physics: physics::PhysicsContext::new(0., -9.81, 0.),
+            physics,
             ctx,
             gfx,
-            debug_font_id: Default::default(),
+            debug_font_id,
             shader,
             camera: camera::CameraState::new(),
             input_state: InputState::default(),
+            ground_handle,
+            capsule_handle,
         })
     }
 
     pub fn update(&mut self) {
-        if let Some(capsule) = self.physics.capsule_mut() {
+        if let Some(capsule) = self.physics.rigid_body_mut(self.capsule_handle) {
             let mut v = Vector3::zeros();
             let speed = 1.;
             if self.input_state.w {
@@ -95,7 +126,8 @@ impl Game {
         }
 
         self.physics.step();
-        self.camera.update(self.physics.capsule_position());
+        self.camera
+            .update(self.physics.collider_position(self.capsule_handle));
 
         let mut g = self.gfx.lock(&mut self.ctx);
         g.set_camera(self.camera);
@@ -111,7 +143,7 @@ impl Game {
         g.set_shader(Some(self.shader.clone()));
         g.draw(geometry);
 
-        if let Some(position) = self.physics.capsule_position() {
+        if let Some(position) = self.physics.collider_position(self.capsule_handle) {
             g.draw_with_transform(
                 solstice::Geometry {
                     mesh: &self.capsule,
@@ -182,6 +214,11 @@ impl Game {
             }
         }
     }
+
+    pub fn handle_resize(&mut self, width: f32, height: f32) {
+        self.ctx.set_viewport(0, 0, width as _, height as _);
+        self.gfx.set_width_height(width, height);
+    }
 }
 
 fn iso_into_tx(position: &rapier3d::math::Isometry<f32>) -> Transform3D {
@@ -194,7 +231,7 @@ fn iso_into_tx(position: &rapier3d::math::Isometry<f32>) -> Transform3D {
 mod camera {
     use crate::iso_into_tx;
     use rapier3d::math::Isometry;
-    use rapier3d::na::{Point3, Translation, UnitQuaternion, Vector3};
+    use rapier3d::na::{Translation, UnitQuaternion, Vector3};
     use solstice_2d::Transform3D;
 
     #[derive(Copy, Clone)]
@@ -243,11 +280,9 @@ mod camera {
 }
 
 mod physics {
-    use rapier3d::dynamics::{
-        CCDSolver, IntegrationParameters, JointSet, RigidBody, RigidBodyBuilder, RigidBodySet,
-    };
+    use rapier3d::dynamics::{CCDSolver, IntegrationParameters, JointSet, RigidBody, RigidBodySet};
     use rapier3d::geometry::{
-        BroadPhase, ColliderBuilder, ColliderHandle, ColliderSet, NarrowPhase,
+        BroadPhase, Collider, ColliderBuilder, ColliderHandle, ColliderSet, NarrowPhase,
     };
     use rapier3d::math::Isometry;
     use rapier3d::na::Vector3;
@@ -263,45 +298,20 @@ mod physics {
         colliders: ColliderSet,
         joints: JointSet,
         ccd_solver: CCDSolver,
-
-        capsule: ColliderHandle,
-        ground: ColliderHandle,
     }
 
     impl PhysicsContext {
         pub fn new(gx: f32, gy: f32, gz: f32) -> Self {
-            let mut bodies = RigidBodySet::new();
-            let mut colliders = ColliderSet::new();
-
-            let capsule = {
-                let coll = ColliderBuilder::capsule_y(1., 0.5).build();
-                let rb = RigidBodyBuilder::new_dynamic()
-                    .translation(0., 4., 0.)
-                    .restrict_rotations(false, false, false)
-                    .build();
-                let parent_handle = bodies.insert(rb);
-                colliders.insert(coll, parent_handle, &mut bodies)
-            };
-
-            let ground = {
-                let coll = ColliderBuilder::cuboid(100., 0.25, 100.).build();
-                let rb = RigidBodyBuilder::new_static().build();
-                let parent_handle = bodies.insert(rb);
-                colliders.insert(coll, parent_handle, &mut bodies)
-            };
-
             Self {
                 pipeline: PhysicsPipeline::new(),
                 gravity: Vector3::new(gx, gy, gz),
                 integration_parameters: Default::default(),
                 broad_phase: BroadPhase::new(),
                 narrow_phase: NarrowPhase::new(),
-                bodies,
-                colliders,
+                bodies: RigidBodySet::new(),
+                colliders: ColliderSet::new(),
                 joints: JointSet::new(),
                 ccd_solver: CCDSolver::new(),
-                capsule,
-                ground,
             }
         }
 
@@ -320,38 +330,45 @@ mod physics {
             );
         }
 
-        pub fn capsule_position(&self) -> Option<&Isometry<f32>> {
-            self.collider_position(self.capsule)
+        pub fn add_body(&mut self, body: RigidBody, collider: Collider) -> ColliderHandle {
+            let body = self.bodies.insert(body);
+            self.colliders.insert(collider, body, &mut self.bodies)
         }
 
-        pub fn ground_position(&self) -> Option<&Isometry<f32>> {
-            self.collider_position(self.ground)
+        pub fn add_csg(&mut self, body: RigidBody, csg: &rscsg::dim3::Csg) -> ColliderHandle {
+            let vertices = csg
+                .iter_triangles()
+                .flat_map(|triangle| {
+                    std::array::IntoIter::new(triangle.positions).flat_map(|point| {
+                        use rapier3d::math::Point;
+                        std::array::IntoIter::new([Point::new(point.0, point.1, point.2)])
+                    })
+                })
+                .collect::<Vec<_>>();
+            let indices = csg
+                .iter_triangles()
+                .enumerate()
+                .map(|(i, _triangle)| {
+                    let i = i as u32 * 3;
+                    [i + 0, i + 1, i + 2]
+                })
+                .collect::<Vec<[u32; 3]>>();
+            let collider = ColliderBuilder::trimesh(vertices, indices).build();
+            let parent_handle = self.bodies.insert(body);
+            self.colliders
+                .insert(collider, parent_handle, &mut self.bodies)
         }
 
-        fn collider_position(&self, coll: ColliderHandle) -> Option<&Isometry<f32>> {
-            let collider = self.colliders.get(coll)?;
-            let body = self.bodies.get(collider.parent())?;
-            Some(body.position())
+        pub fn collider_position(&self, coll: ColliderHandle) -> Option<&Isometry<f32>> {
+            self.colliders.get(coll).map(Collider::position)
         }
 
-        pub fn capsule_mut(&mut self) -> Option<&mut RigidBody> {
-            self.rigid_body_mut(self.capsule)
-        }
-
-        fn rigid_body_mut(&mut self, coll: ColliderHandle) -> Option<&mut RigidBody> {
+        pub fn rigid_body_mut(&mut self, coll: ColliderHandle) -> Option<&mut RigidBody> {
             let collider = self.colliders.get(coll)?;
             let body = self.bodies.get_mut(collider.parent())?;
             Some(body)
         }
     }
-}
-
-fn capsule() -> rscsg::dim3::Csg {
-    use rscsg::dim3::*;
-    let bottom = Csg::sphere(Vector(0., 1., 0.), 0.5, 20, 20);
-    let top = Csg::sphere(Vector(0., -1., 0.), 0.5, 20, 20);
-    let mid = Csg::cylinder(Vector(0., 1., 0.), Vector(0., -1., 0.), 0.5, 20);
-    Csg::union(&Csg::union(&bottom, &mid), &top)
 }
 
 fn to_vert(triangle: rscsg::dim3::Triangle) -> impl Iterator<Item = solstice_2d::Vertex3D> {
