@@ -49,16 +49,24 @@ pub struct Game {
     shader: solstice_2d::Shader,
     camera: camera::CameraState,
     input_state: InputState,
+    time: std::time::Duration,
+    cron: cron::Cron<physics::PhysicsContext>,
 
     ground_handle: ColliderHandle,
     capsule_handle: ColliderHandle,
 }
 
 impl Game {
-    pub fn new(mut ctx: Context, width: f32, height: f32, rsrcs: Resources) -> eyre::Result<Self> {
+    pub fn new(
+        mut ctx: Context,
+        time: std::time::Duration,
+        width: f32,
+        height: f32,
+        resources: Resources,
+    ) -> eyre::Result<Self> {
         let mut physics = physics::PhysicsContext::new(0., -9.81, 0.);
 
-        let brush = rscsg::dim3::Csg::sphere(rscsg::dim3::Vector(0., 0., 0.), 1., 10, 10);
+        let brush = rscsg::dim3::Csg::sphere(rscsg::dim3::Vector(0., 0., 0.), 3., 10, 10);
 
         let csg = rscsg::dim3::Csg::subtract(
             &rscsg::dim3::Csg::cube(rscsg::dim3::Vector(30., 30., 30.), true)
@@ -102,8 +110,23 @@ impl Game {
         };
 
         let mut gfx = solstice_2d::Graphics::new(&mut ctx, width, height)?;
-        let debug_font_id = gfx.add_font(std::convert::TryInto::try_into(rsrcs.debug_font_data)?);
+        let debug_font_id =
+            gfx.add_font(std::convert::TryInto::try_into(resources.debug_font_data)?);
         let shader = solstice_2d::Shader::with(include_str!("shader.glsl"), &mut ctx)?;
+
+        let mut cron = cron::Cron::default();
+        cron.every(
+            std::time::Duration::from_secs_f32(1.5),
+            |physics: &mut physics::PhysicsContext| {
+                let collider = ColliderBuilder::ball(1.).user_data(1).build();
+                let body = RigidBodyBuilder::new_dynamic()
+                    .translation(0., 10., 0.)
+                    .user_data(1)
+                    .build();
+
+                physics.add_body(body, collider);
+            },
+        );
 
         Ok(Self {
             csg,
@@ -118,12 +141,20 @@ impl Game {
             shader,
             camera: camera::CameraState::new(),
             input_state: InputState::default(),
+            time,
+            cron,
             ground_handle,
             capsule_handle,
         })
     }
 
-    pub fn update(&mut self) {
+    pub fn update(&mut self, time: std::time::Duration) {
+        let dt = time - self.time;
+        for callback in self.cron.update(dt) {
+            (callback)(&mut self.physics)
+        }
+        self.time = time;
+
         if let Some(capsule) = self.physics.rigid_body_mut(self.capsule_handle) {
             let mut v = Vector3::zeros();
             let speed = 1.;
@@ -163,6 +194,21 @@ impl Game {
             instance_count: 1,
         };
         g.draw(geometry);
+
+        for collider in self.physics.colliders() {
+            if let Some(ball) = collider.shape().as_ball() {
+                let position = collider.position();
+                g.draw_with_transform(
+                    solstice_2d::Sphere {
+                        radius: ball.radius,
+                        width_segments: 10,
+                        height_segments: 10,
+                        ..Default::default()
+                    },
+                    iso_into_tx(position),
+                );
+            }
+        }
 
         if let Some(position) = self.physics.collider_position(self.capsule_handle) {
             g.draw_with_transform(
@@ -536,6 +582,105 @@ mod physics {
             let collider = self.colliders.get(coll)?;
             let body = self.bodies.get_mut(collider.parent())?;
             Some(body)
+        }
+
+        pub fn colliders(&self) -> impl std::iter::Iterator<Item = &Collider> + '_ {
+            self.colliders.iter().filter_map(|(_handle, collider)| {
+                if collider.user_data == 1 {
+                    Some(collider)
+                } else {
+                    None
+                }
+            })
+        }
+    }
+}
+
+mod cron {
+    struct Every<T> {
+        t: std::time::Duration,
+        running: std::time::Duration,
+        callback: Box<dyn FnMut(&mut T)>,
+    }
+
+    struct After<T> {
+        triggered: bool,
+        t: std::time::Duration,
+        running: std::time::Duration,
+        callback: Box<dyn FnMut(&mut T)>,
+    }
+
+    pub struct Cron<T> {
+        t: std::time::Duration,
+        every_callbacks: Vec<Every<T>>,
+        after_callbacks: Vec<After<T>>,
+    }
+
+    impl<T> std::default::Default for Cron<T> {
+        fn default() -> Self {
+            Self {
+                t: Default::default(),
+                every_callbacks: vec![],
+                after_callbacks: vec![],
+            }
+        }
+    }
+
+    impl<T> Cron<T> {
+        pub fn every<F>(&mut self, t: std::time::Duration, callback: F)
+        where
+            F: FnMut(&mut T) + 'static,
+        {
+            self.every_callbacks.push(Every {
+                t,
+                running: Default::default(),
+                callback: Box::new(callback),
+            });
+        }
+
+        #[allow(unused)]
+        pub fn after<F>(&mut self, t: std::time::Duration, callback: F)
+        where
+            F: FnMut(&mut T) + 'static,
+        {
+            self.after_callbacks.push(After {
+                triggered: false,
+                t,
+                running: Default::default(),
+                callback: Box::new(callback),
+            });
+        }
+
+        pub fn update(
+            &mut self,
+            dt: std::time::Duration,
+        ) -> impl Iterator<Item = &mut (dyn FnMut(&mut T) + 'static)> + '_ {
+            self.t += dt;
+
+            self.every_callbacks
+                .iter_mut()
+                .filter_map(move |every| {
+                    every.running += dt;
+                    if every.running >= every.t {
+                        every.running -= every.t;
+                        Some(&mut *every.callback)
+                    } else {
+                        None
+                    }
+                })
+                .chain(self.after_callbacks.iter_mut().filter_map(move |after| {
+                    if after.triggered {
+                        None
+                    } else {
+                        after.running += dt;
+                        if after.running >= after.t {
+                            after.triggered = true;
+                            Some(&mut *after.callback)
+                        } else {
+                            None
+                        }
+                    }
+                }))
         }
     }
 }

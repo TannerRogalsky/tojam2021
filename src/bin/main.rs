@@ -16,7 +16,12 @@ fn main() -> eyre::Result<()> {
         debug_font_data: std::fs::read(resources_folder.join("Inconsolata-Regular.ttf"))?,
     };
 
-    let mut game = Game::new(ctx, width as _, height as _, resources)?;
+    let now = {
+        let epoch = std::time::Instant::now();
+        move || epoch.elapsed()
+    };
+
+    let mut game = Game::new(ctx, now(), width as _, height as _, resources)?;
 
     event_loop.run(move |event, _, cf| {
         use glutin::{event::*, event_loop::ControlFlow};
@@ -54,7 +59,7 @@ fn main() -> eyre::Result<()> {
                 window.request_redraw();
             }
             Event::RedrawRequested(_) => {
-                game.update();
+                game.update(now());
                 window.swap_buffers().expect("omfg");
             }
             Event::RedrawEventsCleared => {}

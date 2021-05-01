@@ -8,9 +8,10 @@ edition = "2018"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-rscsg = { git = "https://github.com/tannerrogalsky/rscsg", branch = "fixes" }
-#solstice-2d = "0.2"
-solstice-2d = { path = "../solstice/solstice-2d" }
+#rscsg = { git = "https://github.com/tannerrogalsky/rscsg", branch = "fixes" }
+rscsg = { path = "../rscsg" }
+solstice-2d = "0.2"
+#solstice-2d = { path = "../solstice/solstice-2d" }
 eyre = "0.6"
 rapier3d = "0.8"
 

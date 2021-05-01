@@ -1342,7 +1342,6 @@ dependencies = [
 [[package]]
 name = "rscsg"
 version = "0.2.0"
-source = "git+https://github.com/tannerrogalsky/rscsg?branch=fixes#f97ce587d2cdd5299122f1f00268dba2a0e24a63"
 dependencies = [
  "bitflags",
 ]
@@ -1518,7 +1517,9 @@ dependencies = [
 
 [[package]]
 name = "solstice"
-version = "0.1.20-alpha.0"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8895a376947a6e4166042a8fd43764e8af2cfdbce9421f42487e21e414781237"
 dependencies = [
  "bytemuck",
  "glow",
@@ -1532,7 +1533,9 @@ dependencies = [
 
 [[package]]
 name = "solstice-2d"
-version = "0.2.10-alpha.0"
+version = "0.2.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c28df064de363ab11860b0e569eea41113465c0561e7a8f5d59578bcc24693c"
 dependencies = [
  "bytemuck",
  "glyph_brush",
@@ -1545,6 +1548,8 @@ dependencies = [
 [[package]]
 name = "solstice-derive"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87490905805c192fd0931a6f08394365b488d7730b8a48da8f9bb46514e39caf"
 dependencies = [
  "proc-macro2",
  "quote",

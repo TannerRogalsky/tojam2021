@@ -85,7 +85,8 @@ impl Wrapper {
             true => winit::event::MouseButton::Left,
             false => winit::event::MouseButton::Right,
         };
-        self.inner.handle_mouse_event(crate::MouseEvent::Button(state, button))
+        self.inner
+            .handle_mouse_event(crate::MouseEvent::Button(state, button))
     }
 
     #[wasm_bindgen]
@@ -95,11 +96,13 @@ impl Wrapper {
             true => winit::event::MouseButton::Left,
             false => winit::event::MouseButton::Right,
         };
-        self.inner.handle_mouse_event(crate::MouseEvent::Button(state, button))
+        self.inner
+            .handle_mouse_event(crate::MouseEvent::Button(state, button))
     }
 
     #[wasm_bindgen]
     pub fn handle_mouse_move(&mut self, x: f32, y: f32) {
-        self.inner.handle_mouse_event(crate::MouseEvent::Moved(x, y))
+        self.inner
+            .handle_mouse_event(crate::MouseEvent::Moved(x, y))
     }
 }
